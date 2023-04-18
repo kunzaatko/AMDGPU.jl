@@ -148,6 +148,9 @@ device_num_compute_units(device::AnyROCDevice) =
 device_num_simds_per_compute_unit(device::AnyROCDevice) =
     getinfo(UInt32, device, HSA.AMD_AGENT_INFO_NUM_SIMDS_PER_CU)
 
+device_memory_avail(device::AnyROCDevice) =
+    getinfo(UInt64, device, HSA.AMD_AGENT_INFO_MEMORY_AVAIL)
+
 function device_local_memory_size(device::AnyROCDevice)
     _regions = regions(device)
     for region in _regions

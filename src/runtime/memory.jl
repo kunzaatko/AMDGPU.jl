@@ -267,7 +267,6 @@ Executed asynchronously on `queue` if `async` is true.
 function transfer end
 @doc (@doc transfer) transfer!
 
-
 ## pointer-based
 
 "Enables or disables the slow allocation fallback for non-coherent allocations."
@@ -291,19 +290,6 @@ const USE_HIP_MALLOC_OVERRIDE = let
         flag
     else
         @load_preference("use_hip_malloc_override", false)
-    end
-end
-
-"Sets a limit for total GPU memory allocations."
-set_memory_alloc_limit!(limit::Integer) =
-    @set_preferences!("memory_alloc_limit" => limit)
-const MEMORY_ALLOC_LIMIT = let
-    if haskey(ENV, "JULIA_AMDGPU_MEMORY_ALLOC_LIMIT")
-        limit = parse(Int, ENV["JULIA_AMDGPU_MEMORY_ALLOC_LIMIT"])
-        set_memory_alloc_limit!(limit)
-        limit
-    else
-        @load_preference("memory_alloc_limit", typemax(Int))
     end
 end
 
@@ -336,14 +322,9 @@ function alloc(device::ROCDevice, bytesize::Integer; coherent=false, slow_fallba
 
     bytesize == 0 && return Buffer(C_NULL, C_NULL, C_NULL, 0, device, coherent, false)
 
-    region_kind = if coherent
-        :finegrained
-    else
-        :coarsegrained
-    end
+    region_kind = coherent ? :finegrained : :coarsegrained
+    buf, region = nothing, nothing
 
-    buf = nothing
-    region = nothing
     try
         if region_kind != :coarsegrained
             region = get_region(device, region_kind)
@@ -379,6 +360,7 @@ function alloc(device::ROCDevice, bytesize::Integer; coherent=false, slow_fallba
     end
     return buf
 end
+
 function alloc_or_retry!(f)
     for phase in 1:3
         if phase == 2
@@ -402,33 +384,34 @@ function alloc_or_retry!(f)
     end
 end
 
-const ALL_ALLOCS = Threads.Atomic{Int64}(0)
-function alloc(device::ROCDevice, pool::ROCMemoryPool, bytesize::Integer)
-    if ALL_ALLOCS[] + bytesize > MEMORY_ALLOC_LIMIT
-        check(HSA.STATUS_ERROR_OUT_OF_RESOURCES)
+function attempt_to_free!(device::ROCDevice, bytesize::Integer)::UInt64
+    free_bytesize::UInt64 = UInt64(0)
+    for phase in 1:2
+        free_bytesize = Runtime.device_memory_avail(device)
+        bytesize < free_bytesize && break
+        GC.gc(phase == 2)
+        yield() # Needed?
     end
-    ptr_ref = Ref{Ptr{Cvoid}}()
-    alloc_or_retry!() do
-        HSA.amd_memory_pool_allocate(pool.pool, bytesize, 0, ptr_ref)
-    end
-    Threads.atomic_add!(ALL_ALLOCS, Int64(bytesize))
-    AMDGPU.hsaref!()
-    ptr = ptr_ref[]
-    return Buffer(ptr, C_NULL, ptr, Int64(bytesize), device, Runtime.pool_accessible_by_all(pool), true)
+    free_bytesize
 end
-function alloc(device::ROCDevice, region::ROCMemoryRegion, bytesize::Integer)
-    if ALL_ALLOCS[] + bytesize > MEMORY_ALLOC_LIMIT
-        check(HSA.STATUS_ERROR_OUT_OF_RESOURCES)
-    end
+
+_alloc(p::ROCMemoryPool, bytesize::Integer, ptr_ref) = HSA.amd_memory_pool_allocate(p.pool, bytesize, 0, ptr_ref)
+_alloc(p::ROCMemoryRegion, bytesize::Integer, ptr_ref) = HSA.memory_allocate(p.region, bytesize, ptr_ref)
+
+_accessible(p::ROCMemoryRegion)::Bool = Runtime.region_host_accessible(p)
+_accessible(p::ROCMemoryPool)::Bool = Runtime.pool_accessible_by_all(p)
+
+function alloc(
+    device::ROCDevice, space::S, bytesize::Integer,
+) where S <: Union{ROCMemoryPool, ROCMemoryRegion}
     ptr_ref = Ref{Ptr{Cvoid}}()
-    alloc_or_retry!() do
-        HSA.memory_allocate(region.region, bytesize, ptr_ref)
-    end
-    Threads.atomic_add!(ALL_ALLOCS, Int64(bytesize))
-    AMDGPU.hsaref!()
+    attempt_to_free!(device, bytesize)
+    alloc_or_retry!(() -> _alloc(space, bytesize, ptr_ref))
     ptr = ptr_ref[]
-    return Buffer(ptr, C_NULL, ptr, Int64(bytesize), device, Runtime.region_host_accessible(region), false)
+    AMDGPU.hsaref!()
+    Buffer(ptr, C_NULL, ptr, Int64(bytesize), device, _accessible(space), S <: ROCMemoryPool)
 end
+
 alloc(bytesize; kwargs...) = alloc(AMDGPU.device(), bytesize; kwargs...)
 
 @static if AMDGPU.hip_configured
@@ -465,7 +448,6 @@ function free(buf::Buffer)
             else
                 memory_check(HSA.amd_memory_pool_free(buf.base_ptr), buf.base_ptr)
             end
-            Threads.atomic_sub!(ALL_ALLOCS, Int64(buf.bytesize))
         else
             memory_check(HSA.memory_free(buf.base_ptr), buf.base_ptr)
         end
