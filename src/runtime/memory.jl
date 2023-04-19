@@ -385,13 +385,14 @@ function alloc_or_retry!(f)
 end
 
 function attempt_to_free!(device::ROCDevice, bytesize::Integer)::UInt64
-    free_bytesize::UInt64 = UInt64(0)
     for phase in 1:2
         free_bytesize = Runtime.device_memory_avail(device)
         bytesize < free_bytesize && break
         GC.gc(phase == 2)
-        yield() # Needed?
+        yield()
     end
+    free_bytesize = Runtime.device_memory_avail(device)
+    @assert bytesize < free_bytesize "Not enough memory: $(Base.format_bytes(free_bytesize)) available vs $(Base.format_bytes(bytesize)) requested"
     free_bytesize
 end
 

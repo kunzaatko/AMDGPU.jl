@@ -163,8 +163,8 @@ function GPUArrays.mapreducedim!(f::F, op::OP, R::AnyROCArray{T},
 
     # determine the launch configuration
     items = reduce_items
-    groups = reduce_groups*other_groups
-    gridsize = items*groups
+    groups = reduce_groups * other_groups
+    gridsize = items * groups
 
     # perform the actual reduction
     if reduce_groups == 1
@@ -174,7 +174,7 @@ function GPUArrays.mapreducedim!(f::F, op::OP, R::AnyROCArray{T},
     else
         # we need multiple steps to cover all values to reduce
         partial = similar(R, (size(R)..., reduce_groups))
-        if init === nothing
+        if isnothing(init)
             # without an explicit initializer we need to copy from the output container
             partial .= R
         end
@@ -182,6 +182,7 @@ function GPUArrays.mapreducedim!(f::F, op::OP, R::AnyROCArray{T},
             f, op, init, Val(items), Rreduce, Rother, partial, A))
 
         GPUArrays.mapreducedim!(identity, op, R′, partial; init=init)
+        AMDGPU.unsafe_free!(partial)
     end
 
     return R
