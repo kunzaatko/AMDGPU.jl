@@ -315,6 +315,7 @@ end
 Blocks until all kernels currently executing on `stream` have completed.
 """
 function synchronize(stream::HIPStream)
+    Compiler.check_exceptions()
     HIP.hipStreamSynchronize(stream.stream) |> check
     return
 end
