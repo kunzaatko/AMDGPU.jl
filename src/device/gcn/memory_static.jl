@@ -90,7 +90,7 @@ macro ROCDynamicLocalArray(T, dims, zeroinit=true)
                 # Zeroinit doesn't work at the compiler level for dynamic LDS
                 # allocations, so zero it here
                 for idx in 1:prod($(esc(dims)))
-                    @inbounds $DA[idx] = zero($T)
+                    @inbounds $DA[idx] = zero($(esc(T)))
                 end
                 $sync_workgroup()
             end
