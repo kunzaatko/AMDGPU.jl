@@ -58,20 +58,18 @@ end
     alloc_special(Val{id}(), T, Val{AS.Private}(), Val{len}(), Val{false}())
 
 macro ROCStaticLocalArray(T, dims, zeroinit=true)
-    dims = dims isa Expr ? dims.args[1] : dims
-    @assert dims isa Integer || dims isa Tuple "@ROCStaticLocalArray requires a constant `dims` argument"
-
     zeroinit = zeroinit isa Expr ? zeroinit.args[1] : zeroinit
     @assert zeroinit isa Bool "@ROCStaticLocalArray requires a constant `zeroinit` argument"
 
-    @gensym id
-    len = prod(dims)
+    @gensym id len
     quote
-        $ROCDeviceArray($dims,
+        $len = prod($(esc(dims)))
+        $ROCDeviceArray($(esc(dims)),
             $alloc_local($(QuoteNode(Symbol(:ROCStaticLocalArray_, id))),
             $(esc(T)), $len, $zeroinit))
     end
 end
+
 macro ROCDynamicLocalArray(T, dims, zeroinit=true)
     if Base.libllvm_version < v"14"
         @warn "@ROCDynamicLocalArray is unsupported on LLVM <14\nUndefined behavior may result"
